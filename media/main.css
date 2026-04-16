@@ -1,0 +1,118 @@
+:root {
+  --minimap-bg: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+  --minimap-fg: var(--vscode-editor-foreground, #cccccc);
+  --minimap-border: var(--vscode-panel-border, rgba(128, 128, 128, 0.22));
+  --minimap-slider-bg: var(--vscode-minimapSlider-background, rgba(121, 121, 121, 0.22));
+  --minimap-slider-hover-bg: var(--vscode-minimapSlider-hoverBackground, rgba(100, 100, 100, 0.38));
+  --minimap-slider-active-bg: var(--vscode-minimapSlider-activeBackground, rgba(80, 80, 80, 0.55));
+  --minimap-active-cell: var(--vscode-notebook-focusedCellBorder, var(--vscode-focusBorder, #007fd4));
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--minimap-bg);
+  color: var(--minimap-fg);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 12px);
+}
+
+#container {
+  position: absolute;
+  inset: 0;
+  background: var(--minimap-bg);
+}
+
+.empty-state[hidden],
+#container[hidden] {
+  display: none;
+}
+
+#scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+#scroll::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.3));
+  border-radius: 3px;
+}
+
+#scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(121, 121, 121, 0.5));
+}
+
+#stage {
+  position: relative;
+  margin: 0 auto;
+  cursor: pointer;
+  touch-action: none;
+}
+
+#canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
+}
+
+#viewport-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background: var(--minimap-slider-bg);
+  pointer-events: none;
+  transition: top 0.08s linear, height 0.08s linear;
+  display: none;
+  z-index: 2;
+}
+
+#stage:hover #viewport-indicator {
+  background: var(--minimap-slider-hover-bg);
+}
+
+#viewport-indicator.dragging {
+  background: var(--minimap-slider-active-bg);
+  transition: none;
+}
+
+#viewport-indicator.animating {
+  transition: none;
+}
+
+#active-cell-marker {
+  position: absolute;
+  left: 0;
+  width: 2px;
+  background: var(--minimap-active-cell);
+  pointer-events: none;
+  display: none;
+  z-index: 3;
+  opacity: 0.85;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground, rgba(200, 200, 200, 0.6));
+  font-style: italic;
+  line-height: 1.5;
+}

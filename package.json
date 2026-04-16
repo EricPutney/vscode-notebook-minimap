@@ -1,0 +1,145 @@
+{
+  "name": "notebook-minimap",
+  "displayName": "Notebook Minimap",
+  "description": "Editor-beside minimap for Jupyter and VS Code native notebooks",
+  "version": "0.5.0",
+  "publisher": "community",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "enabledApiProposals": [
+    "notebookEditorScroll"
+  ],
+  "categories": [
+    "Notebooks",
+    "Other"
+  ],
+  "keywords": [
+    "notebook",
+    "jupyter",
+    "minimap",
+    "navigation"
+  ],
+  "activationEvents": [
+    "onNotebook:jupyter-notebook",
+    "onNotebook:interactive"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "notebookMinimap.open",
+        "title": "Open Notebook Minimap Beside",
+        "category": "Notebook Minimap"
+      },
+      {
+        "command": "notebookMinimap.toggle",
+        "title": "Toggle Notebook Minimap",
+        "category": "Notebook Minimap"
+      },
+      {
+        "command": "notebookMinimap.refresh",
+        "title": "Refresh Notebook Minimap",
+        "category": "Notebook Minimap"
+      },
+      {
+        "command": "notebookMinimap.toggleRenderCharacters",
+        "title": "Toggle Minimap Render Mode (Blocks / Characters)",
+        "category": "Notebook Minimap"
+      },
+      {
+        "command": "notebookMinimap.toggleFillPanelWidth",
+        "title": "Toggle Minimap Fill-Panel-Width",
+        "category": "Notebook Minimap"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "notebookMinimap.toggle",
+        "key": "ctrl+k m",
+        "mac": "cmd+k m",
+        "when": "notebookEditorFocused || activeWebviewPanelId == 'notebookMinimap.panel'"
+      }
+    ],
+    "configuration": {
+      "title": "Notebook Minimap",
+      "properties": {
+        "notebookMinimap.maxColumn": {
+          "type": "number",
+          "default": 80,
+          "minimum": 30,
+          "maximum": 300,
+          "description": "Maximum column width reflected in the minimap. Lower values produce a thinner minimap."
+        },
+        "notebookMinimap.renderCharacters": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render a block per character (true) vs. a density bar per line (false)."
+        },
+        "notebookMinimap.scale": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 3,
+          "description": "Scale multiplier for the base pixel size (character width + line height)."
+        },
+        "notebookMinimap.fillPanelWidth": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stretch the minimap to fill the editor column width. When true, the minimap resizes with the column divider; when false, it keeps a fixed compact width and centers."
+        },
+        "notebookMinimap.showCellBoundaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Draw lines between notebook cells."
+        },
+        "notebookMinimap.followActiveCell": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-scroll the minimap to keep the active cell in view."
+        },
+        "notebookMinimap.includeOutputs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render executed cell outputs (text + images) in the minimap."
+        },
+        "notebookMinimap.renderMarkdownHeadings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emphasize Markdown headings with larger colored bars (and tiny inline labels when there is room)."
+        },
+        "notebookMinimap.maxImageHeightRows": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 120,
+          "description": "Maximum vertical size (in minimap rows) for rendered image outputs."
+        },
+        "notebookMinimap.autoOpenOnNotebook": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open the minimap beside a notebook the first time one becomes active in this window."
+        },
+        "notebookMinimap.defaultWidthFraction": {
+          "type": "number",
+          "default": 0.12,
+          "minimum": 0.05,
+          "maximum": 0.5,
+          "description": "Fraction of editor-area width the minimap column takes when first opened (applied only when the resulting layout is a simple two-column split). Drag the column divider afterwards to adjust."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.3"
+  }
+}
