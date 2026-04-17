@@ -2,14 +2,16 @@
   "name": "notebook-minimap",
   "displayName": "Notebook Minimap",
   "description": "Editor-beside minimap for Jupyter and VS Code native notebooks",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "community",
   "license": "MIT",
   "engines": {
     "vscode": "^1.75.0"
   },
   "enabledApiProposals": [
-    "notebookEditorScroll"
+    "notebookEditorScroll",
+    "themeTokenColors",
+    "documentTokenColors"
   ],
   "categories": [
     "Notebooks",

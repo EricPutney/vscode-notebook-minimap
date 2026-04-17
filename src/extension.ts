@@ -61,6 +61,24 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(scrollApi(e => controller.onScrollState(e)));
   }
 
+  // Theme-resolved token colors via proposed `themeTokenColors`. Forward to
+  // the controller now and on every theme change so the webview renderer
+  // uses the editor's real syntax colors.
+  const readTokenColors = () => {
+    const themeAny = vscode.window.activeColorTheme as unknown as {
+      tokenColors?: {
+        default?: string; keyword?: string; string?: string; number?: string;
+        comment?: string; function?: string; type?: string; variable?: string;
+        operator?: string; constant?: string;
+      };
+    };
+    return themeAny.tokenColors ?? {};
+  };
+  controller.onThemeChange(readTokenColors());
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveColorTheme(() => controller.onThemeChange(readTokenColors()))
+  );
+
   // Seed the controller with the current editor so open() has something to show.
   const seed =
     vscode.window.activeNotebookEditor ?? vscode.window.visibleNotebookEditors?.[0];

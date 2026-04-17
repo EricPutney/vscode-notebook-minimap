@@ -72,6 +72,40 @@
   /** @type {readonly number[]|null} */
   let cellLayoutReal = null;
 
+  // Scroll messages from the extension host can burst at the display refresh
+  // rate (60 Hz+). Processing each synchronously performs several style
+  // writes and a binary search per message — 10 messages per frame means
+  // 9 wasted updates (only the last is ever painted). Coalesce bursts to
+  // one flush per animation frame, always carrying the latest state.
+  /** @type {any|null} */
+  let pendingScrollMsg = null;
+  let pendingScrollRAF = null;
+  function queueScrollState(msg) {
+    pendingScrollMsg = msg;
+    if (pendingScrollRAF !== null) return;
+    pendingScrollRAF = requestAnimationFrame(flushScrollState);
+  }
+  function flushScrollState() {
+    pendingScrollRAF = null;
+    const msg = pendingScrollMsg;
+    pendingScrollMsg = null;
+    if (!msg || msg.notebookId !== notebookId) return;
+    pixelScroll = {
+      scrollTop: msg.scrollTop,
+      scrollHeight: msg.scrollHeight,
+      viewportHeight: msg.viewportHeight,
+    };
+    if (Array.isArray(msg.cellLayout) && msg.cellLayout.length > 1) {
+      cellLayoutReal = msg.cellLayout;
+    }
+    if (scrollAnchors.length < 2) resetScrollAnchors();
+    if (anchorRecordPending) {
+      anchorRecordPending = false;
+      recordAnchorsFromTransition();
+    }
+    updateViewportIndicator();
+  }
+
   // Progressive anchor table that maps real-notebook pixel offsets to minimap
   // pixel offsets. Seeded with {0→0, scrollHeight→totalHeight} (the global
   // ratio endpoints) and refined every time a cell boundary crosses the
@@ -114,6 +148,14 @@
 
   const MAX_OUTPUT_LINES = 20;
   const EST_PX_PER_CODE_LINE = 20;
+
+  // Theme-resolved foreground colors for common syntax categories. Supplied
+  // by the extension via the `themeTokenColors` proposed API — the active
+  // color theme's actual tokenColors rules resolved on the main thread.
+  // Empty when the proposal isn't enabled; palette falls back to the
+  // symbolIcon.* CSS variables (close but not exact).
+  /** @type {{default?:string, keyword?:string, string?:string, number?:string, comment?:string, function?:string, type?:string, variable?:string, operator?:string, constant?:string}} */
+  let themeTokenColors = {};
 
   // ── Image cache ────────────────────────────────────────────────────────────
 
@@ -173,10 +215,14 @@
       outputBg: cssVar('--vscode-textBlockQuote-background', 'rgba(128,128,128,0.05)'),
       outputFg: cssVar('--vscode-descriptionForeground', 'rgba(200,200,200,0.6)'),
       errorFg: cssVar('--vscode-errorForeground', '#f48771'),
-      keyword: cssVar('--vscode-symbolIcon-keywordForeground', '#c586c0'),
-      stringFg: cssVar('--vscode-symbolIcon-stringForeground', '#ce9178'),
-      numberFg: cssVar('--vscode-symbolIcon-numberForeground', '#b5cea8'),
-      commentFg: cssVar('--vscode-editorLineNumber-foreground', 'rgba(128,128,128,0.7)'),
+      // Prefer theme-resolved tokenColors when present (exact match with
+      // the editor's syntax highlighting), fall back to the symbolIcon.*
+      // CSS vars otherwise. These are themeTokenColors-first, CSS-fallback.
+      keyword: themeTokenColors.keyword || cssVar('--vscode-symbolIcon-keywordForeground', '#c586c0'),
+      stringFg: themeTokenColors.string || cssVar('--vscode-symbolIcon-stringForeground', '#ce9178'),
+      numberFg: themeTokenColors.number || cssVar('--vscode-symbolIcon-numberForeground', '#b5cea8'),
+      commentFg: themeTokenColors.comment || cssVar('--vscode-editorLineNumber-foreground', 'rgba(128,128,128,0.7)'),
+      functionFg: themeTokenColors.function || cssVar('--vscode-symbolIcon-functionForeground', '#dcdcaa'),
       h1: cssVar('--vscode-textLink-activeForeground', cssVar('--vscode-textLink-foreground', '#3794ff')),
       h2: cssVar('--vscode-textLink-foreground', '#3794ff'),
       h3: cssVar('--vscode-symbolIcon-keywordForeground', '#c586c0'),
@@ -424,7 +470,7 @@
       if (isMarkup && lineInfo.headingLevel > 0 && config.renderMarkdownHeadings) {
         drawHeadingLine(lineInfo.text, lineInfo.y, lineInfo.h, lineInfo.headingLevel);
       } else {
-        drawTextLine(lineInfo.text, lineInfo.y, lineInfo.h, cell, isMarkup);
+        drawTextLine(lineInfo.text, lineInfo.y, lineInfo.h, cell, isMarkup, li);
       }
     }
 
@@ -432,7 +478,7 @@
     for (const out of layout.outputs) drawOutput(out);
   }
 
-  function drawTextLine(rawLine, y, lineH, cell, isMarkup) {
+  function drawTextLine(rawLine, y, lineH, cell, isMarkup, lineIndex) {
     if (!palette) return;
     const cw = metrics.charW;
     const px = metrics.padX;
@@ -492,10 +538,18 @@
       return;
     }
 
-    // Character-level rendering
-    let inString = /** @type {string|null} */ (null);
+    // Color source: editor tokens (documentTokenColors proposed API). When
+    // tokens haven't arrived yet (notebook just opened, cell edited but
+    // re-tokenization pending, or stock VS Code without the proposal), the
+    // line renders in the default foreground — we do NOT attempt a
+    // heuristic classification, which diverges visibly from the real
+    // editor syntax highlighting.
+    const editorTokens = (cell.tokens && lineIndex >= 0 && lineIndex < cell.tokens.length)
+      ? cell.tokens[lineIndex]
+      : null;
     let lastColor = null;
     let lastAlpha = -1;
+    let tIdx = 0;
 
     for (let i = 0; i < len; i++) {
       const code = line.charCodeAt(i);
@@ -504,21 +558,12 @@
       let c = lineColor;
       let a = lineAlpha;
 
-      if (!isComment) {
-        const ch = line[i];
-        if (inString) {
-          c = palette.stringFg; a = 0.85;
-          if (ch === inString && line.charCodeAt(i - 1) !== 92) inString = null;
-        } else if (ch === '"' || ch === "'" || ch === '`') {
-          inString = ch; c = palette.stringFg; a = 0.85;
-        } else if (code >= 48 && code <= 57) {
-          const prev = i > 0 ? line.charCodeAt(i - 1) : 0;
-          const prevIdent = (prev >= 48 && prev <= 57) || (prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || prev === 95;
-          if (!prevIdent) { c = palette.numberFg; a = 0.9; } else a = 0.9;
-        } else if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95) {
-          a = 0.9;
-        } else if (code < 128) {
-          a = 0.75;
+      if (editorTokens) {
+        while (tIdx < editorTokens.length && editorTokens[tIdx].endCharacter <= i) tIdx++;
+        if (tIdx < editorTokens.length && editorTokens[tIdx].startCharacter <= i) {
+          const fg = editorTokens[tIdx].foreground;
+          if (fg) c = fg;
+          a = 0.95;
         }
       }
 
@@ -1273,6 +1318,11 @@
     prevVisStart = -1;
     prevVisEnd = -1;
     anchorRecordPending = false;
+    if (pendingScrollRAF !== null) {
+      cancelAnimationFrame(pendingScrollRAF);
+      pendingScrollRAF = null;
+    }
+    pendingScrollMsg = null;
   }
 
   function updateActiveCellMarker() {
@@ -1286,7 +1336,18 @@
     activeCellMarker.style.height = layout.height + 'px';
   }
 
+  // Suppresses autoScroll while the user is navigating via the minimap.
+  // Clicking / dragging on the minimap produces scroll events that would
+  // otherwise pull the minimap's own scroll to keep the overlay in view —
+  // which means the spot the user just clicked jumps out from under them.
+  // Set by sendRevealAt; decays on its own.
+  let autoScrollSuppressUntil = 0;
+
   function autoScroll() {
+    if (performance.now() < autoScrollSuppressUntil) return;
+    autoScrollImpl();
+  }
+  function autoScrollImpl() {
     if (visibleRanges.length === 0 || cellLayouts.length === 0) return;
     const viewportH = container.getBoundingClientRect().height;
     if (totalHeight <= viewportH) {
@@ -1358,6 +1419,11 @@
   }
 
   function sendRevealAt(e, isClick) {
+    // Clicks/drags drive the editor scroll, which bounces back as a
+    // setScrollState event that would otherwise trigger autoScroll on the
+    // minimap itself. Suppress it briefly — the user's cursor position on
+    // the minimap is what they're watching, not the overlay position.
+    autoScrollSuppressUntil = performance.now() + 350;
     const y = pointerStageY(e);
     const idx = findCellAt(y);
     if (idx < 0) return;
@@ -1386,16 +1452,33 @@
   stage.addEventListener('pointerup', onPointerEnd);
   stage.addEventListener('pointercancel', onPointerEnd);
 
-  // Resize observer
-  let resizeTimer = null;
+  // Resize observer. Defer all DOM work to a subsequent animation frame so
+  // no writes land inside the observer callback itself — Chromium emits
+  // "ResizeObserver loop completed with undelivered notifications" whenever
+  // it detects writes during the observation cycle that could plausibly
+  // produce further resize events, even when they don't.
+  let resizeRAF = null;
   const ro = new ResizeObserver(() => {
-    if (resizeTimer) return;
-    resizeTimer = setTimeout(() => {
-      resizeTimer = null;
+    if (resizeRAF !== null) return;
+    resizeRAF = requestAnimationFrame(() => {
+      resizeRAF = null;
       scheduleDraw();
-    }, 50);
+    });
   });
   ro.observe(container);
+
+  // Chromium logs the above "ResizeObserver loop" message at INFO level
+  // whenever layout writes land adjacent to observer fires — even when no
+  // real loop exists. It floods the console during active scrolling /
+  // tokenization rollouts. Silence just that one string; preserve every
+  // other error.
+  window.addEventListener('error', (e) => {
+    if (e && typeof e.message === 'string' &&
+      e.message.indexOf('ResizeObserver loop') !== -1) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  });
 
   // Theme change observer
   const themeObserver = new MutationObserver(() => {
@@ -1474,22 +1557,19 @@
         break;
       case 'setScrollState':
         if (msg.notebookId !== notebookId) return;
-        pixelScroll = {
-          scrollTop: msg.scrollTop,
-          scrollHeight: msg.scrollHeight,
-          viewportHeight: msg.viewportHeight,
-        };
-        if (Array.isArray(msg.cellLayout) && msg.cellLayout.length > 1) {
-          cellLayoutReal = msg.cellLayout;
+        queueScrollState(msg);
+        break;
+      case 'setTokenColors':
+        themeTokenColors = msg.tokenColors || {};
+        palette = readPalette();
+        scheduleDraw();
+        break;
+      case 'setCellTokens':
+        if (msg.notebookId !== notebookId) return;
+        if (msg.cellIndex >= 0 && msg.cellIndex < cells.length) {
+          cells[msg.cellIndex].tokens = msg.tokens;
+          scheduleDraw();
         }
-        if (scrollAnchors.length < 2) resetScrollAnchors();
-        // Now that we have fresh scrollTop, record any pending anchor from
-        // a recent visibleRanges transition.
-        if (anchorRecordPending) {
-          anchorRecordPending = false;
-          recordAnchorsFromTransition();
-        }
-        updateViewportIndicator();
         break;
       case 'setConfig':
         config = msg.config;

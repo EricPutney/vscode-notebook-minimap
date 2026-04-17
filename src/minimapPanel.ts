@@ -4,6 +4,7 @@ import {
   ExtensionMessage,
   MinimapConfig,
   OutputItem,
+  ThemeTokenColors,
   VisibleRangeTuple,
   WebviewMessage,
 } from './types';
@@ -33,6 +34,7 @@ export class MinimapPanelController {
   private _dirtyCells = new Set<number>();
   private _needsFullResync = false;
   private _flushTimer?: NodeJS.Timeout;
+  private _tokenColors: ThemeTokenColors = {};
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -177,6 +179,12 @@ export class MinimapPanelController {
    * extrapolation in tall cells. Silently ignored when the proposed API
    * isn't present at runtime.
    */
+  public onThemeChange(tokenColors: ThemeTokenColors): void {
+    this._tokenColors = tokenColors;
+    if (!this._panel || !this._webviewReady) return;
+    this._post({ type: 'setTokenColors', tokenColors });
+  }
+
   public onScrollState(e: {
     notebookEditor: vscode.NotebookEditor;
     scrollTop: number;
@@ -237,6 +245,7 @@ export class MinimapPanelController {
     switch (msg.type) {
       case 'ready': {
         this._webviewReady = true;
+        this._post({ type: 'setTokenColors', tokenColors: this._tokenColors });
         const ed = this._resolveEditor();
         if (ed) {
           this._editor = ed;
@@ -299,7 +308,9 @@ export class MinimapPanelController {
     const notebookId = ed.notebook.uri.toString();
     for (const idx of this._dirtyCells) {
       if (idx < 0 || idx >= ed.notebook.cellCount) continue;
-      this._post({ type: 'updateCell', notebookId, cell: this._extractCell(ed.notebook.cellAt(idx)) });
+      const cell = ed.notebook.cellAt(idx);
+      this._post({ type: 'updateCell', notebookId, cell: this._extractCell(cell) });
+      this._fetchTokensForCell(cell);
     }
     this._dirtyCells.clear();
   }
@@ -317,6 +328,47 @@ export class MinimapPanelController {
       visibleRanges: this._toVisibleRanges(editor),
       activeCell: editor.selection ? editor.selection.start : -1,
     });
+    this._fetchTokensForAllCells(editor);
+  }
+
+  /**
+   * Asynchronously fetches editor-tokenized colors for every cell and ships
+   * them to the webview as they land. Uses the `documentTokenColors`
+   * proposed API; when it isn't available, silently no-ops and the webview
+   * falls back to its heuristic tokenizer.
+   */
+  private _fetchTokensForAllCells(editor: vscode.NotebookEditor): void {
+    const getDocumentTokens = (vscode.languages as unknown as {
+      getDocumentTokens?: (doc: vscode.TextDocument) => Thenable<readonly (readonly { startCharacter: number; endCharacter: number; foreground?: string }[])[]>;
+    }).getDocumentTokens;
+    if (typeof getDocumentTokens !== 'function') return;
+
+    const notebookId = editor.notebook.uri.toString();
+    const notebook = editor.notebook;
+    for (let i = 0; i < notebook.cellCount; i++) {
+      const cell = notebook.cellAt(i);
+      const cellIndex = i;
+      Promise.resolve(getDocumentTokens(cell.document)).then(tokens => {
+        if (!tokens || !this._panel || !this._webviewReady) return;
+        if (this._editor?.notebook !== notebook) return;
+        if (cellIndex >= notebook.cellCount || notebook.cellAt(cellIndex)?.document.uri.toString() !== cell.document.uri.toString()) return;
+        this._post({ type: 'setCellTokens', notebookId, cellIndex, tokens });
+      }, () => {/* ignore */});
+    }
+  }
+
+  private _fetchTokensForCell(cell: vscode.NotebookCell): void {
+    const getDocumentTokens = (vscode.languages as unknown as {
+      getDocumentTokens?: (doc: vscode.TextDocument) => Thenable<readonly (readonly { startCharacter: number; endCharacter: number; foreground?: string }[])[]>;
+    }).getDocumentTokens;
+    if (typeof getDocumentTokens !== 'function') return;
+    const notebookId = cell.notebook.uri.toString();
+    const cellIndex = cell.index;
+    Promise.resolve(getDocumentTokens(cell.document)).then(tokens => {
+      if (!tokens || !this._panel || !this._webviewReady) return;
+      if (this._editor?.notebook !== cell.notebook) return;
+      this._post({ type: 'setCellTokens', notebookId, cellIndex, tokens });
+    }, () => {/* ignore */});
   }
 
   private _sendViewport(editor: vscode.NotebookEditor): void {
