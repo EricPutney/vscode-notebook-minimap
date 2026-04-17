@@ -5,6 +5,8 @@
 
 declare module 'vscode' {
 
+	// API proposal: github.com/microsoft/vscode/issues/<proposal-issue-TBD>
+	//
 	// Exposes the editor's tokenized representation of a text document with
 	// theme-resolved foreground colors for each token. Lets extensions that
 	// render text outside the editor — minimaps, previews, documentation
@@ -23,7 +25,14 @@ declare module 'vscode' {
 		readonly endCharacter: number;
 		/** CSS color string (hex or rgb). `undefined` when the theme falls
 		 *  through to `editor.foreground`. */
-		readonly foreground?: string;
+		readonly foreground: string | undefined;
+		/**
+		 * Font-style string as supplied by the theme's tokenColors rule —
+		 * space-separated combination of `italic`, `bold`, `underline`,
+		 * `strikethrough`. `undefined` when the theme applies no style.
+		 * Reserved for future population; renderers may ignore it today.
+		 */
+		readonly fontStyle?: string;
 	}
 
 	export namespace languages {
@@ -41,9 +50,10 @@ declare module 'vscode' {
 		 *
 		 * The call forces tokenization of every line; for very large
 		 * documents it may take hundreds of milliseconds. Prefer invoking
-		 * it after large edits settle, and cache the result per document
-		 * version.
+		 * it after large edits settle, cache the result per document
+		 * version, and pass a {@link CancellationToken} so callers can
+		 * abort stale requests.
 		 */
-		export function getDocumentTokens(document: TextDocument): Thenable<readonly (readonly DocumentLineToken[])[]>;
+		export function getDocumentTokens(document: TextDocument, token?: CancellationToken): Thenable<readonly (readonly DocumentLineToken[])[]>;
 	}
 }

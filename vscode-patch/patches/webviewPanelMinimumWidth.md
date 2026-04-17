@@ -1,39 +1,26 @@
-# Extension: `WebviewPanelOptions.minimumWidth`
+# Proposed API: `webviewPanelMinimumWidth`
 
-Per-panel override of the 220 px workbench default editor minimum width. Lets extensions that ship thin webview UIs (minimaps, scrollbars, outlines, narrow side panels) opt their panel below the default — without affecting any other editor.
+Per-panel override of the workbench's 220 px default editor minimum width. Lets extensions that ship thin webview UIs (minimaps, scrollbars, outlines, narrow side panels) opt their own panel below the default — without affecting any other editor in the workbench.
 
 ## Public API shape
 
-New optional field on the existing `vscode.WebviewPanelOptions` interface:
+See [`../src/vscode-dts/vscode.proposed.webviewPanelMinimumWidth.d.ts`](../src/vscode-dts/vscode.proposed.webviewPanelMinimumWidth.d.ts). The proposal augments the existing stable `WebviewPanelOptions` with:
 
 ```typescript
-readonly minimumWidth?: number;  // CSS px; defaults to DEFAULT_EDITOR_MIN_DIMENSIONS.width (220)
-```
-
-Threaded through the same serialization path as `enableFindWidget` / `retainContextWhenHidden`. Persists with the webview across reloads (panel options survive via `webviewInput.webview.options`).
-
-Note: this lives in `vscode.d.ts` as a direct field rather than a proposed-API augmentation because the threading through `WebviewOptions` (main-thread struct) is orthogonal to proposals. For upstream it should move to a `vscode.proposed.webviewPanelMinimumWidth.d.ts` and gate the public API on `checkProposedApiEnabled`; the internal plumbing can stay as-is.
-
-## Edits
-
-### 1. `src/vscode-dts/vscode.d.ts`
-
-Add the field to `WebviewPanelOptions` alongside `retainContextWhenHidden`:
-
-```typescript
-/**
- * Minimum width of the editor group that hosts this webview panel, in
- * CSS pixels. When omitted, the workbench default applies (220 px).
- *
- * Lower for thin-column UIs (minimaps, outlines). Only affects this
- * specific panel — other editors keep their own minimums.
- */
 readonly minimumWidth?: number;
 ```
 
+An opted-out extension that sets the field gets a throw at `createWebviewPanel` time via `checkProposedApiEnabled`; opted-in extensions see the field typed.
+
+## Edits
+
+### 1. `src/vscode-dts/vscode.proposed.webviewPanelMinimumWidth.d.ts`
+
+New proposed-API file. `declare module 'vscode'` augments `WebviewPanelOptions` with the optional field. No changes to stable `vscode.d.ts`.
+
 ### 2. `src/vs/workbench/api/common/extHost.protocol.ts`
 
-Add to `IWebviewPanelOptions`:
+Add to `IWebviewPanelOptions` (internal wire type; not gated):
 
 ```typescript
 export interface IWebviewPanelOptions {
@@ -45,19 +32,34 @@ export interface IWebviewPanelOptions {
 
 ### 3. `src/vs/workbench/api/common/extHostWebviewPanels.ts`
 
-Serialize in `serializeWebviewPanelOptions`:
+Gate the field's use at serialization time. `serializeWebviewPanelOptions` now takes the extension description and throws on opted-out extensions that set `minimumWidth`:
 
 ```typescript
-return {
-    enableFindWidget: options.enableFindWidget,
-    retainContextWhenHidden: options.retainContextWhenHidden,
-    minimumWidth: options.minimumWidth,
-};
+function serializeWebviewPanelOptions(extension: IExtensionDescription, options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+    if ((options as { minimumWidth?: number }).minimumWidth !== undefined) {
+        checkProposedApiEnabled(extension, 'webviewPanelMinimumWidth');
+    }
+    return {
+        enableFindWidget: options.enableFindWidget,
+        retainContextWhenHidden: options.retainContextWhenHidden,
+        minimumWidth: (options as { minimumWidth?: number }).minimumWidth,
+    };
+}
 ```
+
+Call site in `createWebviewPanel` becomes `serializeWebviewPanelOptions(extension, options)`.
+
+Add the import:
+
+```typescript
+import { checkProposedApiEnabled } from '../../services/extensions/common/extensions.js';
+```
+
+The cast-via-`{ minimumWidth?: number }` is required because the proposed augmentation only surfaces when the extension opts in — inside main-thread code we operate on the raw options shape.
 
 ### 4. `src/vs/workbench/contrib/webview/browser/webview.ts`
 
-Add to `WebviewOptions` (main-thread struct):
+Add to `WebviewOptions` (main-thread struct — not API-gated, internal type):
 
 ```typescript
 export interface WebviewOptions {
@@ -102,3 +104,17 @@ Only affects this pane; other editors keep their own minimums. When the webview 
 ## Persistence
 
 `mainThreadWebviewPanels.ts::$registerWebview` serializes `webviewInput.webview.options` back into the pane's backup state; on restore, `reviveWebviewOptions` reads `minimumWidth` from that blob. So the minimum width survives window reloads without any extra state.
+
+## Extension opt-in
+
+Consumers add `webviewPanelMinimumWidth` to their `package.json`:
+
+```jsonc
+{
+  "enabledApiProposals": [
+    "webviewPanelMinimumWidth"
+  ]
+}
+```
+
+Without this, setting `minimumWidth` throws at panel creation.

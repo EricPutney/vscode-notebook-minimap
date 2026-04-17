@@ -5,8 +5,10 @@
 
 declare module 'vscode' {
 
-	// https://github.com/microsoft/vscode/issues/105625
-	// https://github.com/microsoft/vscode/issues/71038
+	// API proposal: github.com/microsoft/vscode/issues/<proposal-issue-TBD>
+	// Motivating feature requests:
+	//   - https://github.com/microsoft/vscode/issues/105625
+	//   - https://github.com/microsoft/vscode/issues/71038
 	//
 	// Exposes the pixel-level vertical scroll state of a notebook editor so
 	// that extensions can build sub-cell aware UIs (minimaps, progress
@@ -104,7 +106,7 @@ declare module 'vscode' {
 		 * real→display pixel mapping that accounts for the varying real
 		 * pixel rates of code vs. output regions.
 		 */
-		readonly cellLayout?: readonly number[];
+		readonly cellLayout: readonly number[] | undefined;
 	}
 
 	export namespace window {

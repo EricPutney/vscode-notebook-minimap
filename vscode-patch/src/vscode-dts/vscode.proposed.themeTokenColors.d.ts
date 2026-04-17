@@ -5,7 +5,8 @@
 
 declare module 'vscode' {
 
-	// https://github.com/microsoft/vscode/issues/32813
+	// API proposal: github.com/microsoft/vscode/issues/<proposal-issue-TBD>
+	// Related: https://github.com/microsoft/vscode/issues/32813
 	//
 	// Exposes the active color theme's resolved foreground colors for common
 	// TextMate token categories (keyword, string, number, comment, function,
@@ -56,7 +57,11 @@ declare module 'vscode' {
 		 * Updated when the active color theme changes — the same event
 		 * ({@link window.onDidChangeActiveColorTheme}) that fires for the
 		 * existing `kind` field also carries the refreshed values.
+		 *
+		 * `undefined` when the proposal isn't enabled for the calling
+		 * extension, or before the first theme-change event has been
+		 * observed (extremely brief window at extension activation).
 		 */
-		readonly tokenColors: ThemeTokenColors;
+		readonly tokenColors?: ThemeTokenColors;
 	}
 }
