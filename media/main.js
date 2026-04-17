@@ -61,6 +61,17 @@
   /** @type {{scrollTop:number, scrollHeight:number, viewportHeight:number}|null} */
   let pixelScroll = null;
 
+  // Real-notebook pixel top offsets of every cell, delivered by the proposed
+  // `notebookEditorScroll` API. Length is cellCount + 1: cellLayoutReal[i] is
+  // the top of cell i, cellLayoutReal[cellCount] is the scroll bottom. This
+  // is an exact map (sourced from NotebookCellList internals) — when we have
+  // it, real→minimap mapping is deterministic at every cell boundary, and we
+  // only interpolate *within* a single cell (two-segment for code / output).
+  // Updated in-place whenever the API reports a change; sparse scroll events
+  // leave it untouched so we don't re-cache on pure-scroll frames.
+  /** @type {readonly number[]|null} */
+  let cellLayoutReal = null;
+
   // Progressive anchor table that maps real-notebook pixel offsets to minimap
   // pixel offsets. Seeded with {0→0, scrollHeight→totalHeight} (the global
   // ratio endpoints) and refined every time a cell boundary crosses the
@@ -735,9 +746,25 @@
       return;
     }
 
-    // Only record when a cell boundary actually transitioned.
-    // At that instant the boundary's real pixel offset equals scrollTop
-    // (top edge) or scrollTop + viewportHeight (bottom edge).
+    // Discontinuous jump (click-to-scroll, programmatic reveal): the prev →
+    // cur relationship no longer encodes a single boundary crossing. Any
+    // anchor derived from it pairs a new real offset with a stale cell's
+    // minimap offset and poisons the whole mapping (non-monotonic entries
+    // produce tiny / inverted viewport indicators). Skip.
+    const JUMP_STEP = 3;
+    const disjoint = curEnd <= prevVisStart || curStart >= prevVisEnd;
+    const bigStep =
+      Math.abs(curStart - prevVisStart) > JUMP_STEP ||
+      Math.abs(curEnd - prevVisEnd) > JUMP_STEP;
+    if (disjoint || bigStep) {
+      prevVisStart = curStart;
+      prevVisEnd = curEnd;
+      return;
+    }
+
+    // Only record when a cell boundary actually transitioned. At that
+    // instant the boundary's real pixel offset equals scrollTop (top edge)
+    // or scrollTop + viewportHeight (bottom edge).
 
     // Scrolled down: cell(s) left top → curStart's top ≈ scrollTop
     if (curStart > prevVisStart && curStart < cellLayouts.length) {
@@ -745,8 +772,11 @@
     }
 
     // Scrolled down: cell(s) entered bottom → the newly-appeared cell's
-    // top ≈ scrollTop + viewportHeight
-    if (curEnd > prevVisEnd && prevVisEnd >= 0 && prevVisEnd < cellLayouts.length) {
+    // top ≈ scrollTop + viewportHeight.  Skip when prevVisEnd collapses
+    // onto the cell we just anchored at the top (the viewport shifted
+    // fully past the prior cell into a single new one — the bottom edge
+    // is somewhere inside that same cell, not at its top).
+    if (curEnd > prevVisEnd && prevVisEnd < cellLayouts.length && prevVisEnd !== curStart) {
       upsertAnchor(scrollTop + viewportHeight, cellLayouts[prevVisEnd].top, prevVisEnd);
     }
 
@@ -755,8 +785,9 @@
       upsertAnchor(scrollTop, cellLayouts[prevVisStart].top, prevVisStart);
     }
 
-    // Scrolled up: cell(s) left bottom → curEnd boundary ≈ bottom of viewport
-    if (curEnd < prevVisEnd && curEnd >= 0 && curEnd < cellLayouts.length) {
+    // Scrolled up: cell(s) left bottom → curEnd boundary ≈ bottom of viewport.
+    // Same collapsed-edge guard as the scrolled-down case.
+    if (curEnd < prevVisEnd && curEnd >= 0 && curEnd < cellLayouts.length && curEnd !== prevVisStart) {
       upsertAnchor(scrollTop + viewportHeight, cellLayouts[curEnd].top, curEnd);
     }
 
@@ -766,16 +797,38 @@
 
   function upsertAnchor(realY, minimapY, cellIdx) {
     const MERGE_DIST = 3;
+    // Merge with a near-duplicate real offset (keep one anchor per scroll
+    // position; the newer observation is more accurate).
     for (let i = 0; i < scrollAnchors.length; i++) {
       if (Math.abs(scrollAnchors[i].realY - realY) < MERGE_DIST) {
+        // Refuse the update if it would break monotonicity with neighbors.
+        const prev = i > 0 ? scrollAnchors[i - 1] : null;
+        const next = i < scrollAnchors.length - 1 ? scrollAnchors[i + 1] : null;
+        if (prev && minimapY < prev.minimapY) return;
+        if (next && minimapY > next.minimapY) return;
         scrollAnchors[i].realY = realY;
         scrollAnchors[i].minimapY = minimapY;
         scrollAnchors[i].cellIdx = cellIdx;
         return;
       }
     }
-    scrollAnchors.push({ realY, minimapY, cellIdx });
-    scrollAnchors.sort((a, b) => a.realY - b.realY);
+    // Find insertion position by realY.
+    let insertIdx = scrollAnchors.length;
+    for (let i = 0; i < scrollAnchors.length; i++) {
+      if (scrollAnchors[i].realY > realY) {
+        insertIdx = i;
+        break;
+      }
+    }
+    // Reject any anchor that would make the table non-monotonic. A
+    // monotonic table is an invariant that `mapRealToMinimap` relies on;
+    // one bad entry produces nonsense viewport indicators everywhere the
+    // interpolation crosses it.
+    const prev = insertIdx > 0 ? scrollAnchors[insertIdx - 1] : null;
+    const next = insertIdx < scrollAnchors.length ? scrollAnchors[insertIdx] : null;
+    if (prev && minimapY < prev.minimapY) return;
+    if (next && minimapY > next.minimapY) return;
+    scrollAnchors.splice(insertIdx, 0, { realY, minimapY, cellIdx });
   }
 
   /**
@@ -790,7 +843,123 @@
    * Falls back to simple linear interpolation when the span doesn't cover exactly
    * one cell.
    */
+  /**
+   * Locate a realY in cellLayoutReal and return intra-cell two-segment
+   * interpolation. This is the *exact* path — real cell boundaries come
+   * straight from NotebookCellList via the proposed API — so the mapping
+   * stays accurate under zoom, resize, and output rendering without any
+   * calibration scrolling by the user. Returns null when cellLayoutReal
+   * isn't available or the math doesn't line up; caller should fall back.
+   */
+  function mapRealToMinimapExact(realY) {
+    if (!cellLayoutReal || cellLayoutReal.length < 2 || !cellLayouts.length) return null;
+    if (cellLayoutReal.length !== cellLayouts.length + 1) return null;
+    if (totalHeight <= 0) return null;
+
+    // Clamp to the real scroll range.
+    const first = cellLayoutReal[0];
+    const last = cellLayoutReal[cellLayoutReal.length - 1];
+    if (realY <= first) return 0;
+    if (realY >= last) return totalHeight;
+
+    // Binary search for the cell containing realY.
+    let lo = 0;
+    let hi = cellLayoutReal.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (cellLayoutReal[mid] <= realY) lo = mid;
+      else hi = mid;
+    }
+    const ci = lo;
+    if (ci < 0 || ci >= cellLayouts.length) return null;
+
+    const cellRealTop = cellLayoutReal[ci];
+    const cellRealBot = cellLayoutReal[ci + 1];
+    const realCellH = cellRealBot - cellRealTop;
+    if (realCellH <= 0) return cellLayouts[ci].top;
+
+    const lay = cellLayouts[ci];
+    const cell = cells[ci];
+    const minimapCellTop = lay.top;
+    const minimapCodePx = lay.headerH + lay.bodyH;
+    const minimapOutputPx = lay.outputsH;
+
+    const offset = realY - cellRealTop;
+
+    // Two-segment intra-cell mapping: split real cell height into a code
+    // portion (estimated from lineCount × per-line px) and an output
+    // portion (remainder). Maps each to the minimap's own code / output
+    // sub-regions so a tall output that's compressed on the minimap
+    // doesn't make the overlay race through it.
+    const realCodePx = cell ? Math.min(cell.lineCount * EST_PX_PER_CODE_LINE, realCellH * 0.95) : realCellH;
+    const realOutputPx = realCellH - realCodePx;
+
+    if (cell && realOutputPx > 0 && minimapOutputPx > 0 && minimapCodePx > 0) {
+      if (offset <= realCodePx) {
+        const frac = realCodePx > 0 ? offset / realCodePx : 0;
+        return minimapCellTop + frac * minimapCodePx;
+      }
+      const outputOffset = offset - realCodePx;
+      const frac = realOutputPx > 0 ? outputOffset / realOutputPx : 0;
+      return minimapCellTop + minimapCodePx + frac * minimapOutputPx;
+    }
+
+    // Single-segment cell: just scale across the full cell layout.
+    const frac = offset / realCellH;
+    return minimapCellTop + frac * lay.height;
+  }
+
+  /** Inverse of mapRealToMinimapExact. */
+  function mapMinimapToRealExact(minimapY) {
+    if (!cellLayoutReal || cellLayoutReal.length < 2 || !cellLayouts.length) return null;
+    if (cellLayoutReal.length !== cellLayouts.length + 1) return null;
+    if (totalHeight <= 0) return null;
+
+    if (minimapY <= 0) return cellLayoutReal[0];
+    if (minimapY >= totalHeight) return cellLayoutReal[cellLayoutReal.length - 1];
+
+    // Binary search for the minimap cell containing minimapY.
+    let lo = 0;
+    let hi = cellLayouts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cellLayouts[mid].top <= minimapY) lo = mid;
+      else hi = mid - 1;
+    }
+    const ci = lo;
+    const lay = cellLayouts[ci];
+    const cell = cells[ci];
+    const minimapCellTop = lay.top;
+    const minimapCodePx = lay.headerH + lay.bodyH;
+    const minimapOutputPx = lay.outputsH;
+
+    const cellRealTop = cellLayoutReal[ci];
+    const cellRealBot = cellLayoutReal[ci + 1];
+    const realCellH = cellRealBot - cellRealTop;
+    if (realCellH <= 0) return cellRealTop;
+
+    const realCodePx = cell ? Math.min(cell.lineCount * EST_PX_PER_CODE_LINE, realCellH * 0.95) : realCellH;
+    const realOutputPx = realCellH - realCodePx;
+    const offset = minimapY - minimapCellTop;
+
+    if (cell && realOutputPx > 0 && minimapOutputPx > 0 && minimapCodePx > 0) {
+      if (offset <= minimapCodePx) {
+        const frac = minimapCodePx > 0 ? offset / minimapCodePx : 0;
+        return cellRealTop + frac * realCodePx;
+      }
+      const outputOffset = offset - minimapCodePx;
+      const frac = minimapOutputPx > 0 ? outputOffset / minimapOutputPx : 0;
+      return cellRealTop + realCodePx + frac * realOutputPx;
+    }
+
+    const frac = lay.height > 0 ? offset / lay.height : 0;
+    return cellRealTop + frac * realCellH;
+  }
+
   function mapRealToMinimap(realY) {
+    const exact = mapRealToMinimapExact(realY);
+    if (exact !== null) return exact;
+
     const n = scrollAnchors.length;
     if (n < 2) return totalHeight > 0 ? (realY / (pixelScroll?.scrollHeight || 1)) * totalHeight : 0;
     if (realY <= scrollAnchors[0].realY) return scrollAnchors[0].minimapY;
@@ -844,6 +1013,9 @@
    * corresponding real notebook scrollTop using the same two-segment logic.
    */
   function mapMinimapToReal(minimapY) {
+    const exact = mapMinimapToRealExact(minimapY);
+    if (exact !== null) return exact;
+
     const n = scrollAnchors.length;
     if (n < 2) return totalHeight > 0 ? (minimapY / totalHeight) * (pixelScroll?.scrollHeight || 0) : 0;
     if (minimapY <= scrollAnchors[0].minimapY) return scrollAnchors[0].realY;
@@ -1096,6 +1268,7 @@
     lastTransitionTime = 0;
     animMs = 0;
     pixelScroll = null;
+    cellLayoutReal = null;
     scrollAnchors = [];
     prevVisStart = -1;
     prevVisEnd = -1;
@@ -1306,6 +1479,9 @@
           scrollHeight: msg.scrollHeight,
           viewportHeight: msg.viewportHeight,
         };
+        if (Array.isArray(msg.cellLayout) && msg.cellLayout.length > 1) {
+          cellLayoutReal = msg.cellLayout;
+        }
         if (scrollAnchors.length < 2) resetScrollAnchors();
         // Now that we have fresh scrollTop, record any pending anchor from
         // a recent visibleRanges transition.

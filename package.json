@@ -2,7 +2,7 @@
   "name": "notebook-minimap",
   "displayName": "Notebook Minimap",
   "description": "Editor-beside minimap for Jupyter and VS Code native notebooks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "community",
   "license": "MIT",
   "engines": {
@@ -123,8 +123,8 @@
         },
         "notebookMinimap.defaultWidthFraction": {
           "type": "number",
-          "default": 0.12,
-          "minimum": 0.05,
+          "default": 0.05,
+          "minimum": 0.02,
           "maximum": 0.5,
           "description": "Fraction of editor-area width the minimap column takes when first opened (applied only when the resulting layout is a simple two-column split). Drag the column divider afterwards to adjust."
         }

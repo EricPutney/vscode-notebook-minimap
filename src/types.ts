@@ -54,6 +54,7 @@ export type ExtensionMessage =
       scrollTop: number;
       scrollHeight: number;
       viewportHeight: number;
+      cellLayout?: readonly number[];
     }
   | { type: 'setConfig'; config: MinimapConfig }
   | { type: 'clear' };

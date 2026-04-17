@@ -63,15 +63,21 @@ export class MinimapPanelController {
       return;
     }
 
+    // Allow the editor column to go much narrower than the 220 px workbench
+    // default — a minimap needs to be thin. `minimumWidth` is an addition
+    // shipped in our VS Code patch; it's not yet in the published
+    // @types/vscode, so cast around the stable type.
+    const panelOptions = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'media')],
+      retainContextWhenHidden: true,
+      minimumWidth: 50,
+    } as vscode.WebviewOptions & vscode.WebviewPanelOptions;
     this._panel = vscode.window.createWebviewPanel(
       PANEL_VIEW_TYPE,
       'Minimap',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      {
-        enableScripts: true,
-        localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'media')],
-        retainContextWhenHidden: true,
-      }
+      panelOptions
     );
 
     this._panel.webview.html = this._getHtml(this._panel.webview);
@@ -106,8 +112,8 @@ export class MinimapPanelController {
     const groups = vscode.window.tabGroups.all;
     if (groups.length !== 2) return;
     const cfg = vscode.workspace.getConfiguration('notebookMinimap');
-    const raw = cfg.get<number>('defaultWidthFraction', 0.12);
-    const frac = Math.min(0.5, Math.max(0.05, Number.isFinite(raw) ? raw : 0.12));
+    const raw = cfg.get<number>('defaultWidthFraction', 0.05);
+    const frac = Math.min(0.5, Math.max(0.02, Number.isFinite(raw) ? raw : 0.05));
     void vscode.commands.executeCommand('vscode.setEditorLayout', {
       orientation: 0,
       groups: [{ size: 1 - frac }, { size: frac }],
@@ -176,6 +182,7 @@ export class MinimapPanelController {
     scrollTop: number;
     scrollHeight: number;
     viewportHeight: number;
+    cellLayout?: readonly number[];
   }): void {
     if (!this._panel || !this._webviewReady || !this._editor) return;
     if (e.notebookEditor.notebook !== this._editor.notebook) return;
@@ -185,6 +192,7 @@ export class MinimapPanelController {
       scrollTop: e.scrollTop,
       scrollHeight: e.scrollHeight,
       viewportHeight: e.viewportHeight,
+      cellLayout: e.cellLayout,
     });
   }
 
