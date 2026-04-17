@@ -51,6 +51,13 @@ declare module 'vscode' {
 		 * Undefined if the editor has never been laid out.
 		 */
 		readonly viewportHeight?: number;
+
+		/**
+		 * Scroll the notebook editor to the given vertical offset in CSS
+		 * pixels, measured from the top of the first cell. The value is
+		 * clamped to `[0, scrollHeight - viewportHeight]`.
+		 */
+		setScrollTop(scrollTop: number): void;
 	}
 
 	/**
@@ -84,6 +91,20 @@ declare module 'vscode' {
 		 * The new visible viewport height, in CSS pixels.
 		 */
 		readonly viewportHeight: number;
+
+		/**
+		 * The absolute pixel offset of each cell's top edge, in cell-index
+		 * order. Length is `cellCount + 1` — the final entry is the bottom
+		 * edge of the last cell (equal to `scrollHeight`).
+		 *
+		 * Present only when cell layout has changed since the last event
+		 * (typically on zoom, resize, output render, or cell exec). When
+		 * `undefined`, the previous value remains authoritative — consumers
+		 * should cache and reuse it. This lets extensions build an exact
+		 * real→display pixel mapping that accounts for the varying real
+		 * pixel rates of code vs. output regions.
+		 */
+		readonly cellLayout?: readonly number[];
 	}
 
 	export namespace window {

@@ -1,119 +1,111 @@
-# VS Code patch: `notebookEditorScroll` proposed API
+# VS Code core patch — notebook minimap API surface
 
-Adds a proposed extension API surface that exposes the notebook editor's pixel-level vertical scroll state and a corresponding change event. Targets the feature requests in [microsoft/vscode#105625](https://github.com/microsoft/vscode/issues/105625) and [#71038](https://github.com/microsoft/vscode/issues/71038).
+Source-level changes to VS Code that back the `notebook-minimap` extension. Three proposed APIs and one non-proposed `WebviewPanelOptions` field. All are additive — no existing API or wire format changes behavior.
 
-## What it exposes
-
-```ts
-interface NotebookEditor {
-  readonly scrollTop?: number;        // CSS px, from top of first cell
-  readonly scrollHeight?: number;     // CSS px, total scrollable content
-  readonly viewportHeight?: number;   // CSS px, visible area
-}
-
-interface NotebookEditorScrollChangeEvent {
-  readonly notebookEditor: NotebookEditor;
-  readonly scrollTop: number;
-  readonly scrollHeight: number;
-  readonly viewportHeight: number;
-}
-
-namespace window {
-  export const onDidChangeNotebookEditorScroll: Event<NotebookEditorScrollChangeEvent>;
-}
-```
-
-## Why
-
-`NotebookEditor.visibleRanges` is cell-indexed. It fires only when a cell crosses the viewport boundary, so any extension that wants to track scrolling *inside* a single tall cell (notebook minimaps, read-progress indicators, scroll-linked output annotations, review-comment overlays, outline peek, etc.) is blind between those transitions.
-
-The data already exists internally — `NotebookCellList` tracks `getViewScrollTop` / `getScrollHeight` / `getRenderHeight`, and `NotebookEditorWidget` already surfaces `scrollTop` / `scrollBottom` / `onDidScroll` to main-thread callers. This patch is purely additive plumbing to get those values across the ext-host RPC boundary.
-
-## File map
+## What's here
 
 ```
-src/vscode-dts/
-  vscode.proposed.notebookEditorScroll.d.ts        ← NEW: public proposal file
-
-patches/
-  01-api-proposal-registration.md                  ← auto-regen of extensionsApiProposals.ts
-  02-ext-host-protocol.md                          ← wire type: scrollState in IProps change
-  03-notebook-editor-interface.md                  ← INotebookEditor.scrollHeight
-  04-notebook-editor-widget.md                     ← widget getter, delegates to _list
-  05-main-thread-bridge.md                         ← subscribe onDidScroll/onDidChangeLayout
-  06-ext-host-notebook-editor.md                   ← accept + expose on apiEditor
-  07-ext-host-notebook-editors.md                  ← emit public Event
-  08-api-factory-registration.md                   ← window.onDidChangeNotebookEditorScroll
+vscode-patch/
+├── README.md                              (this file)
+├── src/vscode-dts/
+│   ├── vscode.proposed.notebookEditorScroll.d.ts
+│   ├── vscode.proposed.themeTokenColors.d.ts
+│   └── vscode.proposed.documentTokenColors.d.ts
+└── patches/
+    ├── notebookEditorScroll.md
+    ├── themeTokenColors.md
+    ├── documentTokenColors.md
+    └── webviewPanelMinimumWidth.md
 ```
+
+The three `.d.ts` files are authoritative public-API declarations — drop them into `src/vscode-dts/` in a VS Code checkout and they're live. The four markdown walkthroughs describe the wire-protocol + main-thread + ext-host edits needed to support each surface.
+
+## API summary
+
+### `notebookEditorScroll` (proposed)
+
+Fixes [microsoft/vscode#105625](https://github.com/microsoft/vscode/issues/105625) and [#71038](https://github.com/microsoft/vscode/issues/71038).
+
+Pixel-level scroll state for notebook editors, where the built-in API only exposes cell-level `visibleRanges`:
+
+- `NotebookEditor.scrollTop` / `scrollHeight` / `viewportHeight` (read-only)
+- `NotebookEditor.setScrollTop(scrollTop)` (programmatic scroll)
+- `window.onDidChangeNotebookEditorScroll`: fires on scroll, resize, zoom, content-height change
+- Event carries `cellLayout?: readonly number[]` — authoritative real-pixel top offsets of every cell, length `cellCount + 1`. Ships only when changed; consumers cache the last non-`undefined` value.
+
+→ [`patches/notebookEditorScroll.md`](patches/notebookEditorScroll.md)
+
+### `themeTokenColors` (proposed)
+
+Extends `vscode.ColorTheme` with a `tokenColors` record of theme-resolved foreground colors for common TextMate scope categories (keyword, string, number, comment, function, type, variable, operator, constant). Updates via the existing `window.onDidChangeActiveColorTheme` event.
+
+Useful for UI decorations outside documents (synthetic labels, legends, headers) that want to match the active theme's syntax palette.
+
+→ [`patches/themeTokenColors.md`](patches/themeTokenColors.md)
+
+### `documentTokenColors` (proposed)
+
+`vscode.languages.getDocumentTokens(document)` returns the editor's per-line tokenization of a document, with each token's foreground resolved against the active theme. Sourced from `TextModel.tokenization.getLineTokens()` + `TokenizationRegistry.getColorMap()` — the same pipeline that paints text in the editor, so colors match exactly.
+
+Handles lazily-loaded cell models via `ITextModelService.createModelReference`, so every notebook cell is tokenizable regardless of whether it's currently bound to a cell editor.
+
+→ [`patches/documentTokenColors.md`](patches/documentTokenColors.md)
+
+### `WebviewPanelOptions.minimumWidth` (not proposed)
+
+Per-panel override of the workbench's 220 px default editor minimum width. Lets individual webviews opt below the default for thin-column UIs (minimaps, outlines). Only affects panels that specify the option; all other editors keep their own minimums.
+
+→ [`patches/webviewPanelMinimumWidth.md`](patches/webviewPanelMinimumWidth.md)
 
 ## How to apply
-
-### 1. Clone VS Code
 
 ```bash
 git clone https://github.com/microsoft/vscode.git
 cd vscode
+nvm use               # project pins Node 22 via .nvmrc
 npm install
-```
 
-### 2. Drop in the proposed-API file
+# drop in the proposed-API declarations
+cp <this-repo>/vscode-patch/src/vscode-dts/*.d.ts src/vscode-dts/
 
-```bash
-cp <path-to-this-patch>/src/vscode-dts/vscode.proposed.notebookEditorScroll.d.ts \
-   ./src/vscode-dts/
-```
+# apply the four per-API walkthroughs
+#   patches/notebookEditorScroll.md           (8 file edits)
+#   patches/themeTokenColors.md               (4 file edits)
+#   patches/documentTokenColors.md            (4 file edits)
+#   patches/webviewPanelMinimumWidth.md       (6 file edits)
 
-### 3. Apply the source edits
+# regenerate the auto-generated proposal registry
+npm run compile-api-proposal-names
 
-Each file under `patches/` is a focused markdown note describing a single file's edits. They're small and localized — mirror existing neighboring code. Walk through them in numeric order.
+# build
+npm run watch
 
-### 4. Regenerate the proposal registry
-
-```bash
-npm run compile-api-proposal-names   # or: npm run watch — it's part of prepublish
-```
-
-This updates `src/vs/platform/extensions/common/extensionsApiProposals.ts` automatically.
-
-### 5. Type-check the ext-host surface
-
-```bash
-npm run compile
-```
-
-If the `.d.ts` side of things is wired correctly the compiler will fail only on the files you actively edited.
-
-### 6. Run VS Code from source
-
-```bash
+# once both watch-client and watch-extensions say "Finished", launch from source
 ./scripts/code.sh
 ```
 
-Press `F5` on the `notebook-minimap` extension folder to launch its Extension Development Host — the proposal is auto-enabled in dev-host mode.
+F5 the `notebook-minimap` extension folder from the custom-built VS Code; EDH automatically grants proposed-API access for extensions loaded via dev-host.
 
-## Runtime considerations
+For a packaged `.vsix` install, enable the proposals in `argv.json`:
 
-- `onDidChangeNotebookEditorScroll` is coalesced on the main thread to one RPC per animation frame (see patch 05). During a 5-second continuous wheel scroll that's ~300 events — reasonable for the ext-host channel. Consumers in the ext host should still throttle if they do expensive work (rAF-debouncing on their own webview is the usual pattern).
-- `scrollHeight` updates independently of `scrollTop` when content height changes (cell executed, output rendered). Subscribing to `onDidChangeLayout` in the bridge captures this; the event fires with the new `scrollHeight` and unchanged `scrollTop`, which is what consumers want for ratio maths.
-- Initial snapshot: the bridge fires once on editor-added so extensions don't have to wait for a scroll before they have values.
+```jsonc
+{
+  "enable-proposed-api": ["community.notebook-minimap"]
+}
+```
+
+## Upstreaming notes
+
+All three proposed APIs follow the existing `vscode.proposed.*.d.ts` + `$acceptEditorPropertiesChanged` / shape-interface conventions. Touches only notebook-editor, theming, and webview-editor plumbing — all additive. `checkProposedApiEnabled` gates every public surface.
+
+`WebviewPanelOptions.minimumWidth` is currently added to stable `vscode.d.ts` for simplicity of local development. Before upstream submission, move the public-API field to a new `vscode.proposed.webviewPanelMinimumWidth.d.ts` and gate `reviveWebviewOptions` behind `checkProposedApiEnabled` at the ext-host layer; the internal `WebviewOptions` threading stays unchanged.
 
 ## Back-compat
 
-All surface additions are optional (`scrollTop?`, `scrollHeight?`, `viewportHeight?`). The added `scrollState` field on the wire protocol is optional. Older ext hosts running against a new renderer simply ignore the field; older renderers running against a new ext host never populate it (the event just doesn't fire). No existing API or wire format changes behavior.
+All additions are optional:
 
-## Testing checklist before upstream PR
+- `NotebookEditorScrollChangeEvent.cellLayout?` — absence means no change since last send; old consumers ignore.
+- `IWebviewPanelOptions.minimumWidth?` — absence falls through to the workbench default.
+- `ColorTheme.tokenColors` — defaults to empty record; old consumers ignore.
 
-- [ ] `npm run compile` clean
-- [ ] `npm run smoketest` clean
-- [ ] A sample extension using the proposed API gets:
-  - [ ] A scroll event on first render (initial snapshot from patch 05)
-  - [ ] Continuous events during wheel scroll
-  - [ ] Event with changed `scrollHeight` when a cell output renders
-  - [ ] Values consistent with `editor.scrollTop + editor.viewportHeight ≤ editor.scrollHeight`
-- [ ] Extension that does NOT enable `notebookEditorScroll` throws at subscribe-time (exercise the `checkProposedApiEnabled` path)
-- [ ] Open the sample `notebookEditorScroll`-enabled extension in two notebook tabs — events route to the right editor
-- [ ] No regression in `onDidChangeNotebookEditorVisibleRanges` timing (it still fires on cell-boundary transitions)
-
-## Upstreaming
-
-This patch sticks to the existing conventions in `extHost.protocol.ts` / `extHostNotebook*.ts` and touches nothing outside notebook-editor API plumbing, so it should be a reasonable PR candidate. Open against `microsoft/vscode` citing #105625 and #71038; proposal starts unflagged (opt-in via `enabledApiProposals`) per standard process and stabilizes after a few iterations of extension-author feedback.
+Old ext hosts running against a new renderer (or vice versa) silently no-op on the new fields. No existing API or wire format changes behavior.
